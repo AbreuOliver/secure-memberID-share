@@ -177,19 +177,19 @@
 <svelte:window on:keydown={handleKeydown} />
 
 <!-- Outer wrapper for the widget (this is what would show inside the iframe) -->
-<div class="min-h-screen w-full bg-neutral-950 text-neutral-50 flex items-center justify-center p-4">
-  <div class="w-full max-w-md space-y-4 text-center">
-    <h1 class="text-2xl font-semibold tracking-tight">
+<div class="min-h-screen w-full text-neutral-950 bg-white flex items-center justify-center p-4">
+  <div class="w-full max-w-lg space-y-4 text-center">
+    <h1 class="text-3xl font-semibold tracking-tight">
       Access Your Insurance Info
     </h1>
-    <p class="text-sm text-neutral-400">
+    <p class="text-lg my-6 text-neutral-00">
       Enter your RCA/BBC email address to receive a one-time code in order to securely
       view your insurance info.
     </p>
 
     <button
       type="button"
-      class="inline-flex items-center justify-center rounded-lg bg-sky-500 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950"
+      class="inline-flex items-center justify-center rounded-xl bg-[#8D2417] px-6 py-4 text-xl font-medium text-white shadow-sm transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950 capitalize"
       on:click={openModal}
     >
       Get started
