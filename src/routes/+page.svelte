@@ -1,395 +1,360 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { supabase } from "$lib/supabase"; // adjust path/name if needed
+	import { onMount } from 'svelte';
+	import { supabase } from '$lib/supabase';
 
-  type Step = "idle" | "email" | "code" | "success";
+	type Step = 'email' | 'code' | 'success';
 
-  let modalOpen = false;
-  let step: Step = "idle";
+	let step: Step = 'email';
 
-  let email = "";
-  let code = "";
-  let identifier: string | null = null;
+	let email = '';
+	let code = '';
 
-  let sending = false;
-  let verifying = false;
-  let fetchingId = false;
+	let sending = false;
+	let verifying = false;
 
-  let emailError: string | null = null;
-  let codeError: string | null = null;
-  let generalError: string | null = null;
+	let emailError: string | null = null;
+	let codeError: string | null = null;
+	let generalError: string | null = null;
 
-  let emailInputEl: HTMLInputElement | null = null;
-  let codeInputEl: HTMLInputElement | null = null;
+	// Dynamic list of identifiers (all columns except email)
+	let identifiers: { key: string; value: string }[] = [];
 
-  onMount(() => {
-    // e.g., check existing session if you want
-  });
+	// Track which identifier was just copied
+	let copiedKey: string | null = null;
+	let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  function openModal() {
-    modalOpen = true;
-    generalError = null;
-    emailError = null;
-    codeError = null;
-    step = "email";
-    email = "";
-    code = "";
-    identifier = null;
-  }
+	// Restore session on page load: if user already logged in,
+	// fetch their identifiers and go straight to success view.
+	onMount(async () => {
+		try {
+			const { data, error } = await supabase.auth.getUser();
+			if (error || !data.user) return;
 
-  function closeModal() {
-    if (sending || verifying || fetchingId) return;
-    modalOpen = false;
-    step = "idle";
-  }
+			const { data: row, error: rowError } = await supabase
+				.from('approved_user_info')
+				.select('*')
+				.single();
 
-  function validateEmail(value: string): boolean {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      emailError = "Please enter your email address.";
-      return false;
-    }
-    const pattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!pattern.test(trimmed)) {
-      emailError = "Please enter a valid email address.";
-      return false;
-    }
-    emailError = null;
-    return true;
-  }
+			if (rowError || !row) return;
 
-  function validateCode(value: string): boolean {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      codeError = "Please enter the 6-digit code.";
-      return false;
-    }
-    if (!/^\d{6}$/.test(trimmed)) {
-      codeError = "The code must be exactly 6 digits.";
-      return false;
-    }
-    codeError = null;
-    return true;
-  }
+			identifiers = Object.entries(row)
+				.filter(([key, value]) => key !== 'email' && value)
+				.map(([key, value]) => ({
+					key: key.replace(/_/g, ' '),
+					value: String(value)
+				}));
 
-  async function handleEmailSubmit() {
-    generalError = null;
-    if (!validateEmail(email)) return;
+			if (identifiers.length === 0) return;
 
-    sending = true;
+			step = 'success';
+		} catch (err) {
+			console.error('Error restoring session:', err);
+		}
+	});
 
-    try {
-      const { data, error } = await supabase.functions.invoke("request-otp", {
-        body: { email: email.trim() }
-      });
+	function resetAll() {
+		step = 'email';
+		email = '';
+		code = '';
+		sending = false;
+		verifying = false;
+		emailError = null;
+		codeError = null;
+		generalError = null;
+		identifiers = [];
+		copiedKey = null;
+	}
 
-      if (error) {
-        console.error(error);
-        generalError = error.message ?? "Unable to send code. Please try again.";
-        return;
-      }
+	function validateEmail(value: string): boolean {
+		const trimmed = value.trim();
+		if (!trimmed) {
+			emailError = 'Please enter your email address.';
+			return false;
+		}
+		const pattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+		if (!pattern.test(trimmed)) {
+			emailError = 'Please enter a valid email address.';
+			return false;
+		}
+		emailError = null;
+		return true;
+	}
 
-      step = "code";
+	function validateCode(value: string): boolean {
+		const trimmed = value.trim();
+		if (!trimmed) {
+			codeError = 'Please enter the 6-digit code.';
+			return false;
+		}
+		if (!/^\d{6}$/.test(trimmed)) {
+			codeError = 'The code must be exactly 6 digits.';
+			return false;
+		}
+		codeError = null;
+		return true;
+	}
 
-      setTimeout(() => {
-        if (codeInputEl) codeInputEl.focus();
-      }, 0);
-    } catch (err: unknown) {
-      console.error(err);
-      generalError = "Something went wrong while sending the code.";
-    } finally {
-      sending = false;
-    }
-  }
+	async function handleEmailSubmit() {
+		generalError = null;
+		if (!validateEmail(email)) return;
 
-  async function handleCodeSubmit() {
-    generalError = null;
-    if (!validateCode(code)) return;
+		sending = true;
 
-    verifying = true;
-    fetchingId = true;
+		try {
+			const { error } = await supabase.auth.signInWithOtp({
+				email: email.trim()
+			});
 
-    try {
-      // 1) Verify the OTP via your Edge Function
-      const { data, error } = await supabase.functions.invoke(
-        "verify-otp",
-        {
-          body: {
-            email: email.trim(),
-            code: code.trim()
-          }
-        }
-      );
+			if (error) {
+				console.error(error);
+				generalError = error.message ?? 'Unable to send code. Please try again.';
+				return;
+			}
 
-      if (error) {
-        console.error(error);
-        generalError = error.message ?? "Invalid or expired code. Please try again.";
-        return;
-      }
+			step = 'code';
+		} catch (err) {
+			console.error(err);
+			generalError = 'Something went wrong while sending the code.';
+		} finally {
+			sending = false;
+		}
+	}
 
-      // 2) After OTP is valid, fetch this user's row from approved_user_info
-      const { data: row, error: rowError } = await supabase
-        .from("approved_user_info")
-        .select("*")
-        .single(); // RLS ensures this is only *their* row
+	async function handleCodeSubmit() {
+		generalError = null;
+		if (!validateCode(code)) return;
 
-      if (rowError) {
-        console.error(rowError);
-        generalError = "Unable to load your insurance info.";
-        return;
-      }
+		verifying = true;
 
-      // Adjust column name if needed (e.g. aflac_dental, etc.)
-      identifier = row.insurance_number ?? null;
+		try {
+			const { error: verifyError } = await supabase.auth.verifyOtp({
+				email: email.trim(),
+				token: code.trim(),
+				type: 'email'
+			});
 
-      if (!identifier) {
-        generalError = "We were unable to retrieve your identifier. Please contact support.";
-        return;
-      }
+			if (verifyError) {
+				console.error(verifyError);
+				generalError = verifyError.message ?? 'Invalid or expired code.';
+				return;
+			}
 
-      step = "success";
-    } catch (err: unknown) {
-      console.error(err);
-      generalError = "Something went wrong while verifying your code.";
-    } finally {
-      verifying = false;
-      fetchingId = false;
-    }
-  }
+			const { data: row, error: rowError } = await supabase
+				.from('approved_user_info')
+				.select('*')
+				.single();
 
-  function handleKeydown(event: KeyboardEvent) {
-    if (!modalOpen) return;
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      closeModal();
-    }
-  }
+			if (rowError || !row) {
+				console.error(rowError);
+				generalError = 'No insurance info found for this email.';
+				return;
+			}
 
-  function copyIdentifier() {
-    if (!identifier) return;
-    navigator.clipboard
-      .writeText(identifier)
-      .catch((err) => console.error("Failed to copy identifier:", err));
-  }
+			identifiers = Object.entries(row)
+				.filter(([key, value]) => key !== 'email' && value)
+				.map(([key, value]) => ({
+					key: key.replace(/_/g, ' '),
+					value: String(value)
+				}));
+
+			if (identifiers.length === 0) {
+				generalError = 'No identifiers available for this user.';
+				return;
+			}
+
+			copiedKey = null;
+			step = 'success';
+		} catch (err) {
+			console.error(err);
+			generalError = 'Something went wrong during verification.';
+		} finally {
+			verifying = false;
+		}
+	}
+
+	async function copyIdentifier(key: string, value: string) {
+		try {
+			await navigator.clipboard.writeText(value);
+
+			if (copyTimeout) {
+				clearTimeout(copyTimeout);
+			}
+
+			copiedKey = key;
+
+			copyTimeout = setTimeout(() => {
+				copiedKey = null;
+			}, 2000);
+		} catch (err) {
+			console.error('Failed to copy identifier:', err);
+		}
+	}
+
+	async function handleSignOut() {
+		try {
+			await supabase.auth.signOut();
+		} catch (err) {
+			console.error('Error signing out:', err);
+		} finally {
+			resetAll(); // your existing reset function
+		}
+	}
 </script>
 
+<div class="flex min-h-screen w-full items-center justify-center bg-white p-6 text-neutral-900">
+	<div class="w-full max-w-3xl space-y-8">
+		{#if step !== 'success'}
+			<!-- Landing / form view -->
+			<header class="space-y-4 text-center">
+				<h1 class="text-4xl font-semibold tracking-tight">Access Your Insurance Info</h1>
+				<p class="text-lg text-neutral-700">
+					Enter your RCA/BBC email address to receive a one-time code and securely view your
+					insurance identifiers.
+				</p>
+			</header>
 
-<svelte:window on:keydown={handleKeydown} />
+			{#if generalError}
+				<div
+					class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-700"
+				>
+					{generalError}
+				</div>
+			{/if}
 
-<!-- Outer wrapper for the widget (this is what would show inside the iframe) -->
-<div class="min-h-screen w-full text-neutral-950 bg-white flex items-center justify-center p-4">
-  <div class="w-full max-w-lg space-y-4 text-center">
-    <h1 class="text-3xl font-semibold tracking-tight">
-      Access Your Insurance Info
-    </h1>
-    <p class="text-lg my-6 text-neutral-00">
-      Enter your RCA/BBC email address to receive a one-time code in order to securely
-      view your insurance info.
-    </p>
+			{#if step === 'email'}
+				<section class="mx-auto max-w-xl">
+					<form class="space-y-4" on:submit|preventDefault={handleEmailSubmit}>
+						<div class="space-y-2">
+							<label for="email" class="block text-sm font-medium text-neutral-900">
+								RCA/BBC email address
+							</label>
+							<input
+								id="email"
+								type="email"
+								bind:value={email}
+								class="block w-full rounded-lg border border-neutral-300 bg-white px-3.5 py-2.5 text-base text-neutral-900 shadow-sm placeholder:text-neutral-400 focus-visible:ring-2 focus-visible:ring-[#8D2417] focus-visible:ring-offset-1 focus-visible:ring-offset-white focus-visible:outline-none"
+								autocomplete="email"
+							/>
+							{#if emailError}
+								<p class="mt-1 text-xs text-red-600">{emailError}</p>
+							{/if}
+						</div>
 
-    <button
-      type="button"
-      class="inline-flex items-center justify-center rounded-xl bg-[#8D2417] px-6 py-4 text-xl font-medium text-white shadow-sm transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-950 capitalize"
-      on:click={openModal}
-    >
-      Get started
-    </button>
-  </div>
+						<button
+							type="submit"
+							class="inline-flex w-full items-center justify-center rounded-xl bg-[#8D2417] px-4 py-3 text-lg font-semibold text-white shadow-sm transition hover:bg-[#a02a1a] focus-visible:ring-2 focus-visible:ring-[#8D2417] focus-visible:ring-offset-2 focus-visible:ring-offset-white focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+							disabled={sending}
+						>
+							{sending ? 'Sending code…' : 'Send code'}
+						</button>
+					</form>
+				</section>
+			{/if}
 
-  {#if modalOpen}
-    <!-- Overlay -->
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
-      on:click={() => closeModal()}
-    ></div>
+			{#if step === 'code'}
+				<section class="mx-auto max-w-xl">
+					<form class="space-y-4" on:submit|preventDefault={handleCodeSubmit}>
+						<div class="space-y-2">
+							<label for="code" class="block text-sm font-medium text-neutral-900">
+								6-digit code
+							</label>
+							<input
+								id="code"
+								type="text"
+								inputmode="numeric"
+								maxlength="6"
+								placeholder="••••••"
+								bind:value={code}
+								class="block w-full rounded-lg border border-neutral-300 bg-white px-3.5 py-2.5 text-center text-lg tracking-[0.35em] text-neutral-900 tabular-nums shadow-sm placeholder:text-neutral-400 focus-visible:ring-2 focus-visible:ring-[#8D2417] focus-visible:ring-offset-1 focus-visible:ring-offset-white focus-visible:outline-none"
+								autocomplete="one-time-code"
+							/>
+							{#if codeError}
+								<p class="mt-1 text-xs text-red-600">{codeError}</p>
+							{/if}
+						</div>
 
-    <!-- Dialog -->
-    <div
-      class="fixed inset-0 z-50 flex items-center justify-center p-4"
-      aria-modal="true"
-      role="dialog"
-    >
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="relative w-full max-w-md rounded-xl bg-neutral-900 border border-neutral-800 shadow-xl p-5 sm:p-6"
-        on:click|stopPropagation
-      >
-        <!-- Close button -->
-        <button
-          type="button"
-          class="absolute right-3 top-3 rounded-full p-1 text-neutral-500 hover:text-neutral-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          on:click={closeModal}
-          aria-label="Close"
-        >
-          <span class="sr-only">Close</span>
-          <svg
-            class="h-4 w-4"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            aria-hidden="true"
-          >
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
+						<button
+							type="submit"
+							class="inline-flex w-full items-center justify-center rounded-xl bg-[#8D2417] px-4 py-3 text-lg font-semibold text-white shadow-sm transition hover:bg-[#a02a1a] focus-visible:ring-2 focus-visible:ring-[#8D2417] focus-visible:ring-offset-2 focus-visible:ring-offset-white focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+							disabled={verifying}
+						>
+							{verifying ? 'Verifying…' : 'Verify code'}
+						</button>
 
-        <!-- Header -->
-        <div class="space-y-1 mb-4">
-          {#if step === "email" || step === "idle"}
-            <h2 class="text-lg font-semibold">Enter your email</h2>
-            <p class="text-xs text-neutral-400">
-              We’ll check if your email is approved and send a one-time code.
-            </p>
-          {:else if step === "code"}
-            <h2 class="text-lg font-semibold">Enter the 6-digit code</h2>
-            <p class="text-xs text-neutral-400">
-              Check your email for a code. Enter it here to verify your identity.
-            </p>
-          {:else if step === "success"}
-            <h2 class="text-lg font-semibold">Your identifier</h2>
-            <p class="text-xs text-neutral-400">
-              Keep this identifier private. You can copy it for your records.
-            </p>
-          {/if}
-        </div>
+						<button
+							type="button"
+							class="w-full text-center text-sm text-neutral-600 underline underline-offset-2 hover:text-neutral-900"
+							on:click={resetAll}
+						>
+							Use a different email or start over
+						</button>
+					</form>
+				</section>
+			{/if}
+		{:else}
+			<!-- SUCCESS: identifiers replace the landing content -->
+			<header class="space-y-3 text-center">
+				<h1 class="text-3xl font-semibold tracking-tight">Your Insurance Identifiers</h1>
+				<p class="text-base text-neutral-700">
+					These are the identifiers associated with your account. You can copy each one
+					individually.
+				</p>
+			</header>
 
-        {#if generalError}
-          <div class="mb-3 rounded-md border border-red-400/50 bg-red-500/10 px-3 py-2 text-xs text-red-200">
-            {generalError}
-          </div>
-        {/if}
+			{#if generalError}
+				<div class="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+					{generalError}
+				</div>
+			{/if}
 
-        <!-- Email step -->
-        {#if step === "email" || step === "idle"}
-          <form
-            class="space-y-3"
-            on:submit|preventDefault={handleEmailSubmit}
-          >
-            <div class="space-y-1">
-              <label for="email" class="block text-xs font-medium text-neutral-200">
-                Email address
-              </label>
-              <input
-                id="email"
-                type="email"
-                class="block w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-50 placeholder:text-neutral-500 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900"
-                bind:value={email}
-                bind:this={emailInputEl}
-                autocomplete="email"
-                spellcheck="false"
-              />
-              {#if emailError}
-                <p class="text-[11px] text-red-300 mt-1">{emailError}</p>
-              {/if}
-            </div>
+			<section class="grid gap-4 md:grid-cols-2">
+				{#each identifiers as item}
+					<article
+						class="flex flex-col gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-4"
+					>
+						<div>
+							<p class="text-xs tracking-wide text-neutral-500 uppercase">
+								{item.key}
+							</p>
+							<p class="font-mono text-xl break-all text-[#8D2417]">
+								{item.value}
+							</p>
+						</div>
 
-            <button
-              type="submit"
-              class="inline-flex w-full items-center justify-center rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900"
-              disabled={sending}
-            >
-              {#if sending}
-                <span class="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent"></span>
-                Sending code…
-              {:else}
-                Send code
-              {/if}
-            </button>
-          </form>
-        {/if}
+						<button
+							type="button"
+							class="mt-1 inline-flex items-center justify-center rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-sm transition hover:bg-neutral-100 disabled:opacity-70"
+							on:click={() => copyIdentifier(item.key, item.value)}
+						>
+							{#if copiedKey === item.key}
+								Added to clipboard
+							{:else}
+								Copy to clipboard
+							{/if}
+						</button>
+					</article>
+				{/each}
+			</section>
 
-        <!-- Code step -->
-        {#if step === "code"}
-          <form
-            class="space-y-3"
-            on:submit|preventDefault={handleCodeSubmit}
-          >
-            <div class="space-y-1">
-              <label for="code" class="block text-xs font-medium text-neutral-200">
-                6-digit code
-              </label>
-              <input
-                id="code"
-                type="text"
-                inputmode="numeric"
-                maxlength="6"
-                class="block w-full rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm text-neutral-50 text-center tracking-[0.3em] tabular-nums placeholder:text-neutral-500 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900"
-                bind:value={code}
-                bind:this={codeInputEl}
-                autocomplete="one-time-code"
-              />
-              {#if codeError}
-                <p class="text-[11px] text-red-300 mt-1">{codeError}</p>
-              {/if}
-            </div>
+			<div class="pt-4 text-center">
+				<div class="flex flex-col justify-center gap-3 pt-4 sm:flex-row">
+					<button
+						type="button"
+						class="inline-flex items-center justify-center rounded-xl border border-neutral-300 bg-white px-4 py-3 text-sm font-medium text-neutral-900 shadow-sm transition hover:bg-neutral-50"
+						on:click={resetAll}
+					>
+						Look up another email
+					</button>
 
-            <button
-              type="submit"
-              class="inline-flex w-full items-center justify-center rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-sky-400 disabled:cursor-not-allowed disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900"
-              disabled={verifying}
-            >
-              {#if verifying}
-                <span class="mr-2 inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent"></span>
-                Verifying…
-              {:else}
-                Verify code
-              {/if}
-            </button>
-
-            <button
-              type="button"
-              class="w-full text-center text-[11px] text-neutral-400 underline underline-offset-2 hover:text-neutral-200"
-              on:click={() => {
-                // Allow user to re-enter email / request new code
-                step = "email";
-                code = "";
-                codeError = null;
-              }}
-            >
-              Use a different email or request a new code
-            </button>
-          </form>
-        {/if}
-
-        <!-- Success step -->
-        {#if step === "success" && identifier}
-          <div class="space-y-4">
-            <div class="rounded-lg border border-neutral-700 bg-neutral-950 px-3 py-3">
-              <p class="text-[11px] uppercase tracking-wide text-neutral-500 mb-1">
-                Your identifier
-              </p>
-              <p class="font-mono text-base text-sky-300 select-all break-all">
-                {identifier}
-              </p>
-            </div>
-
-            <div class="flex flex-col gap-2 sm:flex-row">
-              <button
-                type="button"
-                class="inline-flex flex-1 items-center justify-center rounded-md bg-sky-500 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-sky-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900"
-                on:click={copyIdentifier}
-              >
-                Copy identifier
-              </button>
-
-              <button
-                type="button"
-                class="inline-flex flex-1 items-center justify-center rounded-md border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm font-medium text-neutral-100 shadow-sm transition hover:bg-neutral-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400 focus-visible:ring-offset-2 focus-visible:ring-offset-neutral-900"
-                on:click={closeModal}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        {/if}
-      </div>
-    </div>
-  {/if}
+					<button
+						type="button"
+						class="inline-flex items-center justify-center rounded-xl bg-[#8D2417] px-8 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-neutral-900"
+						on:click={handleSignOut}
+					>
+						Sign out
+					</button>
+				</div>
+			</div>
+		{/if}
+	</div>
 </div>
