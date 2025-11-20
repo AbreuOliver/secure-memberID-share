@@ -23,16 +23,40 @@
 	let copiedKey: string | null = null;
 	let copyTimeout: ReturnType<typeof setTimeout> | null = null;
 
-	// Restore session on page load: if user already logged in,
-	// fetch their identifiers and go straight to success view.
+	// ---------- ADMIN LOGIC ----------
+	const ADMIN_EMAILS = [
+		'oliverabreu@icloud.com',
+		'katielawhun@raleighchristian.com',
+		'pennyhowell@raleighchristian.com'
+	];
+
+	let currentUserEmail: string | null = null;
+	let isAdmin = false;
+
+	let showAdmin = false;
+	let adminRows: Record<string, any>[] = [];
+	let adminColumns: string[] = [];
+	let adminLoading = false;
+	let adminError: string | null = null;
+
+	function computeIsAdmin(emailVal: string | null) {
+		if (!emailVal) return false;
+		return ADMIN_EMAILS.includes(emailVal.toLowerCase());
+	}
+
+	// Restore session on page load
 	onMount(async () => {
 		try {
 			const { data, error } = await supabase.auth.getUser();
 			if (error || !data.user) return;
 
+			currentUserEmail = data.user.email ?? null;
+			isAdmin = computeIsAdmin(currentUserEmail);
+
 			const { data: row, error: rowError } = await supabase
 				.from('approved_user_info')
 				.select('*')
+				.eq('email', currentUserEmail)
 				.single();
 
 			if (rowError || !row) return;
@@ -63,6 +87,7 @@
 		generalError = null;
 		identifiers = [];
 		copiedKey = null;
+		showAdmin = false;
 	}
 
 	function validateEmail(value: string): boolean {
@@ -139,9 +164,15 @@
 				return;
 			}
 
+			// refresh user + admin status
+			const { data: userData } = await supabase.auth.getUser();
+			currentUserEmail = userData?.user?.email ?? null;
+			isAdmin = computeIsAdmin(currentUserEmail);
+
 			const { data: row, error: rowError } = await supabase
 				.from('approved_user_info')
 				.select('*')
+				.eq('email', currentUserEmail)
 				.single();
 
 			if (rowError || !row) {
@@ -196,13 +227,92 @@
 		} catch (err) {
 			console.error('Error signing out:', err);
 		} finally {
-			resetAll(); // your existing reset function
+			resetAll();
 		}
 	}
+
+	// ---------- ADMIN PANEL FUNCTIONS ----------
+
+	async function openAdmin() {
+		adminError = null;
+		adminLoading = true;
+		showAdmin = true;
+
+		try {
+			const { data, error } = await supabase
+				.from('approved_user_info')
+				.select('*')
+				.order('email', { ascending: true });
+
+			if (error) {
+				console.error(error);
+				adminError = 'Failed to load admin data.';
+				return;
+			}
+
+			adminRows = data ?? [];
+
+			// Derive editable columns from first row (everything except email)
+			const first = adminRows[0];
+			adminColumns = first ? Object.keys(first).filter((key) => key !== 'email') : [];
+		} catch (err) {
+			console.error(err);
+			adminError = 'Unexpected error while loading admin data.';
+		} finally {
+			adminLoading = false;
+		}
+	}
+
+	function addAdminRow() {
+		const base: Record<string, any> = { email: '' };
+		for (const col of adminColumns) {
+			base[col] = '';
+		}
+		adminRows = [...adminRows, base];
+	}
+
+	async function saveAdmin() {
+		adminError = null;
+		adminLoading = true;
+
+		try {
+			const { error } = await supabase
+				.from('approved_user_info')
+				.upsert(adminRows, { onConflict: 'email' });
+
+			if (error) {
+				console.error(error);
+				adminError = 'Failed to save changes.';
+				return;
+			}
+		} catch (err) {
+			console.error(err);
+			adminError = 'Unexpected error while saving.';
+		} finally {
+			adminLoading = false;
+		}
+	}
+
+	async function toggleAdminView() {
+		if (!showAdmin) {
+			// first time / switching to admin: load data
+			await openAdmin();
+		} else {
+			// going back to member IDs
+			showAdmin = false;
+		}
+	}
+
+	// --- Dynamic Color Logic ---
+	// The color class string reacts whenever showAdmin changes.
+	$: buttonColorClasses = showAdmin
+		? 'bg-green-600 hover:bg-green-700' // Green when showing 'Back to Member IDs' (showAdmin is true)
+		: 'bg-blue-600 hover:bg-blue-700'; // Blue when showing 'View Admin Table' (showAdmin is false)
+	// ---------------------------
 </script>
 
 <div class="flex min-h-screen w-full items-center justify-center bg-white p-6 text-neutral-900">
-	<div class="w-full max-w-3xl space-y-8">
+	<div class="w-full max-w-screen space-y-8">
 		{#if step !== 'success'}
 			<!-- Landing / form view -->
 			<header class="space-y-4 text-center">
@@ -294,10 +404,20 @@
 		{:else}
 			<!-- SUCCESS: identifiers replace the landing content -->
 			<header class="space-y-3 text-center">
-				<h1 class="text-3xl font-semibold tracking-tight">Your Insurance Identifiers</h1>
+				<h1 class="text-3xl font-semibold tracking-tight">
+					{#if isAdmin && showAdmin}
+						Admin: Approved User Info
+					{:else}
+						Your Insurance Identifiers
+					{/if}
+				</h1>
 				<p class="text-base text-neutral-700">
-					These are the identifiers associated with your account. You can copy each one
-					individually.
+					{#if isAdmin && showAdmin}
+						Manage the list of approved users and their identifiers.
+					{:else}
+						These are the identifiers associated with your account. You can copy each one
+						individually.
+					{/if}
 				</p>
 			</header>
 
@@ -307,34 +427,127 @@
 				</div>
 			{/if}
 
-			<section class="grid gap-4 md:grid-cols-2">
-				{#each identifiers as item}
-					<article
-						class="flex flex-col gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-4"
-					>
-						<div>
-							<p class="text-xs tracking-wide text-neutral-500 uppercase">
-								{item.key}
-							</p>
-							<p class="font-mono text-xl break-all text-[#8D2417]">
-								{item.value}
-							</p>
+			{#if isAdmin && showAdmin}
+				<!-- ADMIN VIEW INSTEAD OF MEMBER IDs -->
+				<section class="mt-6 rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+					<h2 class="mb-3 text-lg font-semibold">Approved User Info</h2>
+
+					{#if adminError}
+						<div
+							class="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+						>
+							{adminError}
 						</div>
+					{/if}
+
+					{#if adminLoading}
+						<p class="text-sm text-neutral-600">Loading…</p>
+					{:else if adminRows.length === 0}
+						<p class="text-sm text-neutral-600">No rows yet. Add a user to get started.</p>
+					{:else}
+						<div class="w-full overflow-x-scroll">
+							<table class="min-w-[70rem] border-collapse text-base">
+								<thead>
+									<tr class="border-b border-neutral-300 bg-neutral-100">
+										<!-- Sticky, wider first column -->
+										<th
+											class="sticky left-0 z-20 w-72 min-w-[25rem] bg-neutral-100 px-4 py-3 text-left text-lg font-semibold"
+										>
+											Email
+										</th>
+
+										{#each adminColumns as col}
+											<th class="min-w-[10rem] px-4 py-3 text-left text-lg font-semibold">
+												{col.replace(/_/g, ' ')}
+											</th>
+										{/each}
+									</tr>
+								</thead>
+
+								<tbody>
+									{#each adminRows as row, i}
+										<tr class="border-b border-neutral-200">
+											<!-- Sticky first cell, extra bottom padding on last row -->
+											<td
+												class="sticky left-0 z-10 w-72 min-w-[20rem] bg-neutral-50 px-4 py-3"
+												class:pb-10={i === adminRows.length - 1}
+											>
+												<input
+													class="w-full rounded border border-neutral-300 px-2 py-1.5 text-base"
+													bind:value={adminRows[i].email}
+													placeholder="email@example.com"
+												/>
+											</td>
+
+											{#each adminColumns as col}
+												<td
+													class="min-w-[10rem] px-4 py-3"
+													class:pb-10={i === adminRows.length - 1}
+												>
+													<input
+														class="w-full rounded border border-neutral-300 px-2 py-1.5 text-base"
+														bind:value={adminRows[i][col]}
+														placeholder={col}
+													/>
+												</td>
+											{/each}
+										</tr>
+									{/each}
+								</tbody>
+							</table>
+						</div>
+					{/if}
+
+					<div class="mt-3 flex flex-wrap gap-2 text-sm">
+						<button
+							type="button"
+							class="rounded-lg border border-neutral-300 bg-white px-3 py-3  font-medium text-neutral-900 shadow-sm hover:bg-neutral-100"
+							on:click={addAdminRow}
+						>
+							Add row
+						</button>
 
 						<button
 							type="button"
-							class="mt-1 inline-flex items-center justify-center rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-sm transition hover:bg-neutral-100 disabled:opacity-70"
-							on:click={() => copyIdentifier(item.key, item.value)}
+							class="rounded-lg bg-sky-600 px-4 py-3  font-medium text-white shadow-sm hover:bg-sky-700 disabled:opacity-60"
+							on:click={saveAdmin}
+							disabled={adminLoading}
 						>
-							{#if copiedKey === item.key}
-								Added to clipboard
-							{:else}
-								Copy to clipboard
-							{/if}
+							{adminLoading ? 'Saving…' : 'Save changes'}
 						</button>
-					</article>
-				{/each}
-			</section>
+					</div>
+				</section>
+			{:else}
+				<!-- MEMBER IDs VIEW -->
+				<section class="mx-auto mt-6 grid max-w-3xl gap-4 md:grid-cols-2">
+					{#each identifiers as item}
+						<article
+							class="flex flex-col gap-2 rounded-xl border border-neutral-200 bg-neutral-50 px-4 py-4"
+						>
+							<div>
+								<p class="text-xs tracking-wide text-neutral-500 uppercase">
+									{item.key}
+								</p>
+								<p class="font-mono text-xl break-all text-[#8D2417]">
+									{item.value}
+								</p>
+							</div>
+
+							<button
+								type="button"
+								class="mt-1 inline-flex items-center justify-center rounded-lg border border-neutral-300 bg-white px-3 py-2 text-sm font-medium text-neutral-900 shadow-sm transition hover:bg-neutral-100 disabled:opacity-70"
+								on:click={() => copyIdentifier(item.key, item.value)}
+							>
+								{#if copiedKey === item.key}
+									Added to clipboard
+								{:else}
+									Copy to clipboard
+								{/if}
+							</button>
+						</article>
+					{/each}
+				</section>
+			{/if}
 
 			<div class="pt-4 text-center">
 				<div class="flex flex-col justify-center gap-3 pt-4 sm:flex-row">
@@ -346,14 +559,26 @@
 						Look up another email
 					</button>
 
-					<button
-						type="button"
-						class="inline-flex items-center justify-center rounded-xl bg-[#8D2417] px-8 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-neutral-900"
-						on:click={handleSignOut}
-					>
-						Sign out
-					</button>
+					{#if isAdmin}
+						<button
+							type="button"
+							class="inline-flex items-center justify-center rounded-xl px-8 py-3 text-sm font-medium text-white shadow-sm transition
+        {buttonColorClasses}"
+							on:click={toggleAdminView}
+						>
+							{showAdmin ? 'Back to Member IDs' : 'View Admin Table'}
+						</button>
+					{/if}
 				</div>
+			</div>
+			<div class="pt-0 text-center">
+				<button
+					type="button"
+					class="inline-flex items-center justify-center rounded-xl bg-[#8D2417] px-8 py-3 text-sm font-medium text-white shadow-sm transition hover:bg-neutral-900"
+					on:click={handleSignOut}
+				>
+					Sign out
+				</button>
 			</div>
 		{/if}
 	</div>
